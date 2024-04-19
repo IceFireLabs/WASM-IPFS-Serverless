@@ -77,3 +77,8 @@ We welcome contributions from the community. To contribute to this project:
 3. Make your changes and commit them (`git commit -am 'Add new feature'`).
 4. Push your changes to the branch (`git push origin feature/your-feature`).
 5. Create a new Pull Request.
+
+
+## License
+
+This library is dual-licensed under Apache 2.0 and MIT terms.

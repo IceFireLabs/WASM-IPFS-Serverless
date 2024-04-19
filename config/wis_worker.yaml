@@ -1,0 +1,29 @@
+app-type: "WASM-IPFS-Serverless-WORKER"
+
+# The network model of HTTP handle ,NetPoll(gin) RAWEPOLL(fiber)
+net-model: "NETPOLL"
+
+# Process inflow traffic network configuration
+NetWork:
+  bind-network: "TCP" #Network transport layer type: TCP | UDP 
+  protocol-type: "HTTP" #Application layer network protocol：HTTP | RESP | QUIC
+  bind-address: "127.0.0.1:28080" #Network listening address
+
+#Runtime debug option
+debug:
+  enable: false
+  pprof-bind-addr: "127.0.0.1:19090"
+
+wasm-modules-files:
+  enable: false
+  path:
+    - "hello.wasm"
+
+wasm-modules-ipfs:
+  enable: false
+  lassie-net:
+    scheme: "http"
+    host: "x.x.x.x"
+    port: xxxx
+  cids:
+    - "QmeDsaLTc8dAfPrQ5duC4j5KqPdGbcinEo5htDqSgU8u8Z"

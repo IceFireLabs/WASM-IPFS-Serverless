@@ -5,14 +5,12 @@ go 1.22
 require (
 	github.com/extism/go-sdk v1.0.3
 	github.com/go-chassis/go-archaius v1.5.6
-	github.com/gofiber/fiber/v2 v2.52.0
-	github.com/influxdata/influxdb1-client v0.0.0-20220302092344-a9ab5670611c
+	github.com/gofiber/fiber/v2 v2.52.4
 	github.com/ipfs/go-cid v0.4.1
 	github.com/ipfs/go-unixfsnode v1.9.0
 	github.com/ipld/go-car/v2 v2.8.0
 	github.com/ipld/go-codec-dagpb v1.6.0
 	github.com/ipld/go-ipld-prime v0.21.0
-	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/sirupsen/logrus v1.7.0
 	github.com/tetratelabs/wazero v1.6.0
 	github.com/urfave/cli v1.22.14

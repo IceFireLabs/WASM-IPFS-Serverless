@@ -86,5 +86,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	lukechampine.com/blake3 v1.1.7 // indirect
 )
-
-replace github.com/influxdata/influxdb1-client => github.com/gitsrc/influxdb1-client v0.0.0-20240122071940-401297b4f3a4

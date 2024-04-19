@@ -1,6 +1,6 @@
 module github.com/BlockCraftsman/WASM-IPFS-Serverless
 
-go 1.22
+go 1.21
 
 require (
 	github.com/extism/go-sdk v1.0.3

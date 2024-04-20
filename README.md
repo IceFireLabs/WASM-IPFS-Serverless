@@ -48,7 +48,7 @@ WASM-IPFS-Serverless combines WebAssembly computing, IPFS storage and retrieval,
    enable: true
    lassie-net:
       scheme: "http"
-      host: "38.45.67.159" #Filecoin Lassie daemon bind IP, This is a test address 
+      host: "38.45.67.159" #Filecoin Lassie daemon bind IP, This is a temporarily available address. When it is unavailable, please visit to install and run daemon. (https://github.com/filecoin-project/lassie?tab=readme-ov-file#http-api)
       port: 62156 #Filecoin Lassie daemon bind Port
    cids:
       - "QmeDsaLTc8dAfPrQ5duC4j5KqPdGbcinEo5htDqSgU8u8Z" #wasm IPFS CID

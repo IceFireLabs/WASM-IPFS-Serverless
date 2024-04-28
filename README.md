@@ -122,11 +122,11 @@ We welcome contributions from the community. To contribute to this project:
 4. Push your changes to the branch (`git push origin feature/your-feature`).
 5. Create a new Pull Request.
 
+## License
+
+This library is dual-licensed under Apache 2.0 and MIT terms.
+
 ## ❤️Thanks for technical support❤️
 1. [**Filecoin-Lassie**](https://github.com/filecoin-project/lassie/):Support IPFS file retrieval
 2. [**Filecoin-IPLD-Go-Car**](https://github.com/ipld/go-car)：Support IPFS Car file extraction
 
-
-## License
-
-This library is dual-licensed under Apache 2.0 and MIT terms.

@@ -2,13 +2,6 @@
 
 WASM-IPFS-Serverless combines WebAssembly computing, IPFS storage and retrieval, and is a serverless framework for decentralized applications.
 
-## ❤️Thanks for technical support❤️
-1. [**Filecoin-Lassie**](https://github.com/filecoin-project/lassie/):Support IPFS file retrieval
-2. [**Filecoin-IPLD-Go-Car**](https://github.com/ipld/go-car)：Support IPFS Car file extraction
-3. [**Extism**](https://github.com/extism/extism):Support wasm plug-in mechanism
-4. [**wazero**](https://github.com/tetratelabs/wazero):Support wasm virtual machine
-5. [**Fiber**](https://github.com/gofiber/fiber):Support high-performance HTTP server
-
 ## Quick start
 
 ### 1. Clone the repository
@@ -128,6 +121,10 @@ We welcome contributions from the community. To contribute to this project:
 3. Make your changes and commit them (`git commit -am 'Add new feature'`).
 4. Push your changes to the branch (`git push origin feature/your-feature`).
 5. Create a new Pull Request.
+
+## ❤️Thanks for technical support❤️
+1. [**Filecoin-Lassie**](https://github.com/filecoin-project/lassie/):Support IPFS file retrieval
+2. [**Filecoin-IPLD-Go-Car**](https://github.com/ipld/go-car)：Support IPFS Car file extraction
 
 
 ## License

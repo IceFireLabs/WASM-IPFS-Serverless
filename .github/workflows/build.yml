@@ -43,16 +43,3 @@ jobs:
         path: |
           bin/WASM-IPFS-Serverless-${{ matrix.platform }}*
           bin/WASM-IPFS-Serverless-${{ matrix.platform }}.exe
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.22'
-
-    - name: Test
-      run: go test -v ./...

@@ -16,14 +16,14 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.9.0
 	github.com/tetratelabs/wazero v1.8.1-0.20240916092830-1353ca24fef0
-	github.com/urfave/cli v1.22.14
+	github.com/urfave/cli v1.22.15
 	go.uber.org/automaxprocs v1.6.0
 	gopkg.in/yaml.v2 v2.4.0
 )
 
 require (
 	github.com/andybalholm/brotli v1.0.5 // indirect
-	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
+	github.com/cpuguy83/go-md2man/v2 v2.0.4 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dylibso/observe-sdk/go v0.0.0-20240819160327-2d926c5d788a // indirect
 	github.com/fsnotify/fsnotify v1.4.7 // indirect

@@ -5,25 +5,27 @@ net-model: "NETPOLL"
 
 # Process inflow traffic network configuration
 NetWork:
-  bind-network: "TCP" #Network transport layer type: TCP | UDP 
-  protocol-type: "HTTP" #Application layer network protocol：HTTP | RESP | QUIC
-  bind-address: "127.0.0.1:28080" #Network listening address
+  bind-network: "TCP" # Network transport layer type: TCP | UDP 
+  protocol-type: "HTTP" # Application layer network protocol: HTTP | RESP | QUIC
+  bind-address: "127.0.0.1:28080" # Network listening address
 
-#Runtime debug option
+# Runtime debug option
 debug:
-  enable: false
-  pprof-bind-addr: "127.0.0.1:19090"
+  enable: false # Enable or disable runtime debugging
+  pprof-bind-addr: "127.0.0.1:19090" # Address to bind the pprof server
 
+# Configuration for loading WASM modules from local files
 wasm-modules-files:
-  enable: false
+  enable: false # Enable or disable loading WASM modules from local files
   path:
-    - "hello.wasm"
+    - "hello.wasm" # Path to the WASM module file
 
+# Configuration for loading WASM modules from IPFS
 wasm-modules-ipfs:
-  enable: false
+  enable: false # Enable or disable loading WASM modules from IPFS
   lassie-net:
-    scheme: "http"
-    host: "x.x.x.x"
-    port: xxxx
+    scheme: "http" # Protocol scheme for the Filecoin-Lassie network
+    host: "x.x.x.x" # Host address for the Filecoin-Lassie network
+    port: xxxx # Port number for the Filecoin-Lassie network
   cids:
-    - "QmeDsaLTc8dAfPrQ5duC4j5KqPdGbcinEo5htDqSgU8u8Z"
+    - "QmeDsaLTc8dAfPrQ5duC4j5KqPdGbcinEo5htDqSgU8u8Z" # Content Identifier (CID) for the WASM module in IPFS

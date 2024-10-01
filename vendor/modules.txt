@@ -41,7 +41,7 @@ github.com/gobwas/glob/syntax/ast
 github.com/gobwas/glob/syntax/lexer
 github.com/gobwas/glob/util/runes
 github.com/gobwas/glob/util/strings
-# github.com/gofiber/fiber/v2 v2.52.4
+# github.com/gofiber/fiber/v2 v2.52.5
 ## explicit; go 1.20
 github.com/gofiber/fiber/v2
 github.com/gofiber/fiber/v2/internal/schema

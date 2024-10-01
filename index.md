@@ -5,7 +5,7 @@
 
 WASM-IPFS-Serverless is an innovative framework that seamlessly integrates WebAssembly computing with IPFS storage and retrieval, offering a robust serverless solution for decentralized applications (dApps). Empowering developers with cutting-edge technologies, this project revolutionizes how decentralized computing is implemented and utilized.
 
-![image](./pic/372457301-bef50047-79b9-4cba-a5db-75b4571917da.png)
+![image](https://icorer.com/img/372457301-bef50047-79b9-4cba-a5db-75b4571917da.png)
 
 
 ## Key Features and Components

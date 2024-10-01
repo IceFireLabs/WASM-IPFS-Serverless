@@ -44,9 +44,10 @@ type ModuleEngine interface {
 
 	// ResolveImportedFunction is used to add imported functions needed to make this ModuleEngine fully functional.
 	// 	- `index` is the function Index of this imported function.
+	// 	- `descFunc` is the type Index in Module.TypeSection of this imported function. It corresponds to Import.DescFunc.
 	// 	- `indexInImportedModule` is the function Index of the imported function in the imported module.
 	//	- `importedModuleEngine` is the ModuleEngine for the imported ModuleInstance.
-	ResolveImportedFunction(index, indexInImportedModule Index, importedModuleEngine ModuleEngine)
+	ResolveImportedFunction(index, descFunc, indexInImportedModule Index, importedModuleEngine ModuleEngine)
 
 	// ResolveImportedMemory is called when this module imports a memory from another module.
 	ResolveImportedMemory(importedModuleEngine ModuleEngine)
@@ -58,6 +59,10 @@ type ModuleEngine interface {
 	// Only called when OwnsGlobals() returns true, and must not be called for imported globals
 	GetGlobalValue(idx Index) (lo, hi uint64)
 
+	// SetGlobalValue sets the value of the global variable at the given Index.
+	// Only called when OwnsGlobals() returns true, and must not be called for imported globals
+	SetGlobalValue(idx Index, lo, hi uint64)
+
 	// OwnsGlobals returns true if this ModuleEngine owns the global variables. If true, wasm.GlobalInstance's Val,ValHi should
 	// not be accessed directly.
 	OwnsGlobals() bool
@@ -65,4 +70,7 @@ type ModuleEngine interface {
 	// FunctionInstanceReference returns Reference for the given Index for a FunctionInstance. The returned values are used by
 	// the initialization via ElementSegment.
 	FunctionInstanceReference(funcIndex Index) Reference
+
+	// MemoryGrown notifies the engine that the memory has grown.
+	MemoryGrown()
 }

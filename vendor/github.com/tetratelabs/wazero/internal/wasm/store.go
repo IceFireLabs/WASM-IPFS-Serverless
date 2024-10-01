@@ -3,12 +3,14 @@ package wasm
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 
 	"github.com/tetratelabs/wazero/api"
-	"github.com/tetratelabs/wazero/internal/close"
+	"github.com/tetratelabs/wazero/experimental"
+	"github.com/tetratelabs/wazero/internal/expctxkeys"
 	"github.com/tetratelabs/wazero/internal/internalapi"
 	"github.com/tetratelabs/wazero/internal/leb128"
 	internalsys "github.com/tetratelabs/wazero/internal/sys"
@@ -95,8 +97,7 @@ type (
 		// or external objects (unimplemented).
 		ElementInstances []ElementInstance
 
-		// Sys is exposed for use in special imports such as WASI, assemblyscript
-		// and gojs.
+		// Sys is exposed for use in special imports such as WASI, assemblyscript.
 		//
 		// # Notes
 		//
@@ -125,7 +126,7 @@ type (
 		Source *Module
 
 		// CloseNotifier is an experimental hook called once on close.
-		CloseNotifier close.Notifier
+		CloseNotifier experimental.CloseNotifier
 	}
 
 	// DataInstance holds bytes corresponding to the data segment in a module.
@@ -180,8 +181,13 @@ func (m *ModuleInstance) buildElementInstances(elements []ElementSegment) {
 			inst := make([]Reference, len(inits))
 			m.ElementInstances[i] = inst
 			for j, idx := range inits {
-				if idx != ElementInitNullReference {
-					inst[j] = m.Engine.FunctionInstanceReference(idx)
+				if index, ok := unwrapElementInitGlobalReference(idx); ok {
+					global := m.Globals[index]
+					inst[j] = Reference(global.Val)
+				} else {
+					if idx != ElementInitNullReference {
+						inst[j] = m.Engine.FunctionInstanceReference(idx)
+					}
 				}
 			}
 		}
@@ -347,7 +353,7 @@ func (s *Store) instantiate(
 		return nil, err
 	}
 
-	if err = m.resolveImports(module); err != nil {
+	if err = m.resolveImports(ctx, module); err != nil {
 		return nil, err
 	}
 
@@ -358,9 +364,17 @@ func (s *Store) instantiate(
 		return nil, err
 	}
 
+	allocator, _ := ctx.Value(expctxkeys.MemoryAllocatorKey{}).(experimental.MemoryAllocator)
+
 	m.buildGlobals(module, m.Engine.FunctionInstanceReference)
-	m.buildMemory(module)
+	m.buildMemory(module, allocator)
 	m.Exports = module.Exports
+	for _, exp := range m.Exports {
+		if exp.Type == ExternTypeTable {
+			t := m.Tables[exp.Index]
+			t.involvingModuleInstances = append(t.involvingModuleInstances, m)
+		}
+	}
 
 	// As of reference types proposal, data segment validation must happen after instantiation,
 	// and the side effect must persist even if there's out of bounds error after instantiation.
@@ -397,12 +411,22 @@ func (s *Store) instantiate(
 	return
 }
 
-func (m *ModuleInstance) resolveImports(module *Module) (err error) {
+func (m *ModuleInstance) resolveImports(ctx context.Context, module *Module) (err error) {
+	// Check if ctx contains an ImportResolver.
+	resolveImport, _ := ctx.Value(expctxkeys.ImportResolverKey{}).(experimental.ImportResolver)
+
 	for moduleName, imports := range module.ImportPerModule {
 		var importedModule *ModuleInstance
-		importedModule, err = m.s.module(moduleName)
-		if err != nil {
-			return err
+		if resolveImport != nil {
+			if v := resolveImport(moduleName); v != nil {
+				importedModule = v.(*ModuleInstance)
+			}
+		}
+		if importedModule == nil {
+			importedModule, err = m.s.module(moduleName)
+			if err != nil {
+				return err
+			}
 		}
 
 		for _, i := range imports {
@@ -422,7 +446,7 @@ func (m *ModuleInstance) resolveImports(module *Module) (err error) {
 					return
 				}
 
-				m.Engine.ResolveImportedFunction(i.IndexPerType, imported.Index, importedModule.Engine)
+				m.Engine.ResolveImportedFunction(i.IndexPerType, i.DescFunc, imported.Index, importedModule.Engine)
 			case ExternTypeTable:
 				expected := i.DescTable
 				importedTable := importedModule.Tables[imported.Index]
@@ -448,6 +472,12 @@ func (m *ModuleInstance) resolveImports(module *Module) (err error) {
 					}
 				}
 				m.Tables[i.IndexPerType] = importedTable
+				importedTable.involvingModuleInstancesMutex.Lock()
+				if len(importedTable.involvingModuleInstances) == 0 {
+					panic("BUG: involvingModuleInstances must not be nil when it's imported")
+				}
+				importedTable.involvingModuleInstances = append(importedTable.involvingModuleInstances, m)
+				importedTable.involvingModuleInstancesMutex.Unlock()
 			case ExternTypeMemory:
 				expected := i.DescMem
 				importedMemory := importedModule.MemoryInstance
@@ -586,6 +616,14 @@ func (g *GlobalInstance) Value() (uint64, uint64) {
 	return g.Val, g.ValHi
 }
 
+func (g *GlobalInstance) SetValue(lo, hi uint64) {
+	if g.Me != nil {
+		g.Me.SetGlobalValue(g.Index, lo, hi)
+	} else {
+		g.Val, g.ValHi = lo, hi
+	}
+}
+
 func (s *Store) GetFunctionTypeIDs(ts []FunctionType) ([]FunctionTypeID, error) {
 	ret := make([]FunctionTypeID, len(ts))
 	for i := range ts {
@@ -622,20 +660,20 @@ func (s *Store) GetFunctionTypeID(t *FunctionType) (FunctionTypeID, error) {
 }
 
 // CloseWithExitCode implements the same method as documented on wazero.Runtime.
-func (s *Store) CloseWithExitCode(ctx context.Context, exitCode uint32) (err error) {
+func (s *Store) CloseWithExitCode(ctx context.Context, exitCode uint32) error {
 	s.mux.Lock()
 	defer s.mux.Unlock()
 	// Close modules in reverse initialization order.
+	var errs []error
 	for m := s.moduleList; m != nil; m = m.next {
 		// If closing this module errs, proceed anyway to close the others.
-		if e := m.closeWithExitCode(ctx, exitCode); e != nil && err == nil {
-			// TODO: use multiple errors handling in Go 1.20.
-			err = e // first error
+		if err := m.closeWithExitCode(ctx, exitCode); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	s.moduleList = nil
 	s.nameToModule = nil
 	s.nameToModuleCap = 0
 	s.typeIDs = nil
-	return
+	return errors.Join(errs...)
 }

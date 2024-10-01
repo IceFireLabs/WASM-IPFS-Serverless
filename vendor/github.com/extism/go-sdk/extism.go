@@ -10,34 +10,54 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"strings"
+	"sync/atomic"
 	"time"
 
+	observe "github.com/dylibso/observe-sdk/go"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
 )
 
+type module struct {
+	module api.Module
+	wasm   []byte
+}
+
+type PluginCtxKey string
+type InputOffsetKey string
+
 //go:embed extism-runtime.wasm
 var extismRuntimeWasm []byte
+
+//go:embed extism-runtime.wasm.version
+var extismRuntimeWasmVersion string
+
+func RuntimeVersion() string {
+	return extismRuntimeWasmVersion
+}
 
 // Runtime represents the Extism plugin's runtime environment, including the underlying Wazero runtime and modules.
 type Runtime struct {
 	Wazero  wazero.Runtime
 	Extism  api.Module
 	Env     api.Module
-	ctx     context.Context
 	hasWasi bool
 }
 
 // PluginConfig contains configuration options for the Extism plugin.
 type PluginConfig struct {
-	ModuleConfig  wazero.ModuleConfig
-	RuntimeConfig wazero.RuntimeConfig
-	EnableWasi    bool
-	LogLevel      LogLevel
+	ModuleConfig   wazero.ModuleConfig
+	RuntimeConfig  wazero.RuntimeConfig
+	EnableWasi     bool
+	LogLevel       LogLevel
+	ObserveAdapter *observe.AdapterBase
+	ObserveOptions *observe.Options
 }
 
 // HttpRequest represents an HTTP request to be made by the plugin.
@@ -48,31 +68,51 @@ type HttpRequest struct {
 }
 
 // LogLevel defines different log levels.
-type LogLevel uint8
+type LogLevel int32
 
 const (
 	logLevelUnset LogLevel = iota // unexporting this intentionally so its only ever the default
-	LogLevelOff
-	LogLevelError
-	LogLevelWarn
-	LogLevelInfo
-	LogLevelDebug
 	LogLevelTrace
+	LogLevelDebug
+	LogLevelInfo
+	LogLevelWarn
+	LogLevelError
+
+	LogLevelOff LogLevel = math.MaxInt32
 )
+
+func (l LogLevel) ExtismCompat() int32 {
+	switch l {
+	case LogLevelTrace:
+		return 0
+	case LogLevelDebug:
+		return 1
+	case LogLevelInfo:
+		return 2
+	case LogLevelWarn:
+		return 3
+	case LogLevelError:
+		return 4
+	default:
+		return int32(LogLevelOff)
+	}
+}
 
 func (l LogLevel) String() string {
 	s := ""
 	switch l {
-	case LogLevelError:
-		s = "ERROR"
-	case LogLevelWarn:
-		s = "WARN"
-	case LogLevelInfo:
-		s = "INFO"
-	case LogLevelDebug:
-		s = "DEBUG"
 	case LogLevelTrace:
 		s = "TRACE"
+	case LogLevelDebug:
+		s = "DEBUG"
+	case LogLevelInfo:
+		s = "INFO"
+	case LogLevelWarn:
+		s = "WARN"
+	case LogLevelError:
+		s = "ERROR"
+	default:
+		s = "OFF"
 	}
 	return s
 }
@@ -80,22 +120,25 @@ func (l LogLevel) String() string {
 // Plugin is used to call WASM functions
 type Plugin struct {
 	Runtime *Runtime
-	Modules map[string]api.Module
-	Main    api.Module
+	Modules map[string]module
+	Main    module
 	Timeout time.Duration
 	Config  map[string]string
 	// NOTE: maybe we can have some nice methods for getting/setting vars
-	Var            map[string][]byte
-	AllowedHosts   []string
-	AllowedPaths   map[string]string
-	LastStatusCode int
-	log            func(LogLevel, string)
-	logLevel       LogLevel
-	guestRuntime   guestRuntime
+	Var                  map[string][]byte
+	AllowedHosts         []string
+	AllowedPaths         map[string]string
+	LastStatusCode       int
+	MaxHttpResponseBytes int64
+	MaxVarBytes          int64
+	log                  func(LogLevel, string)
+	guestRuntime         guestRuntime
+	Adapter              *observe.AdapterBase
+	TraceCtx             *observe.TraceCtx
 }
 
 func logStd(level LogLevel, message string) {
-	log.Printf(message)
+	log.Print(message)
 }
 
 // SetLogger sets a custom logging callback
@@ -103,13 +146,8 @@ func (p *Plugin) SetLogger(logger func(LogLevel, string)) {
 	p.log = logger
 }
 
-// SetLogLevel sets the minim logging level, applies to custom logging callbacks too
-func (p *Plugin) SetLogLevel(level LogLevel) {
-	p.logLevel = level
-}
-
 func (p *Plugin) Log(level LogLevel, message string) {
-	if level > p.logLevel {
+	if level < LogLevel(pluginLogLevel.Load()) {
 		return
 	}
 
@@ -215,13 +253,17 @@ func (u WasmUrl) ToWasmData(ctx context.Context) (WasmData, error) {
 	}, nil
 }
 
+type ManifestMemory struct {
+	MaxPages             uint32 `json:"max_pages,omitempty"`
+	MaxHttpResponseBytes int64  `json:"max_http_response_bytes,omitempty"`
+	MaxVarBytes          int64  `json:"max_var_bytes,omitempty"`
+}
+
 // Manifest represents the plugin's manifest, including Wasm modules and configuration.
 // See https://extism.org/docs/concepts/manifest for schema.
 type Manifest struct {
-	Wasm   []Wasm `json:"wasm"`
-	Memory struct {
-		MaxPages uint32 `json:"max_pages,omitempty"`
-	} `json:"memory,omitempty"`
+	Wasm         []Wasm            `json:"wasm"`
+	Memory       *ManifestMemory   `json:"memory,omitempty"`
 	Config       map[string]string `json:"config,omitempty"`
 	AllowedHosts []string          `json:"allowed_hosts,omitempty"`
 	AllowedPaths map[string]string `json:"allowed_paths,omitempty"`
@@ -230,8 +272,10 @@ type Manifest struct {
 
 type concreteManifest struct {
 	Wasm   []concreteWasm `json:"wasm"`
-	Memory struct {
-		MaxPages uint32 `json:"max_pages,omitempty"`
+	Memory *struct {
+		MaxPages             uint32 `json:"max_pages,omitempty"`
+		MaxHttpResponseBytes *int64 `json:"max_http_response_bytes,omitempty"`
+		MaxVarBytes          *int64 `json:"max_var_bytes,omitempty"`
 	} `json:"memory,omitempty"`
 	Config       map[string]string `json:"config,omitempty"`
 	AllowedHosts []string          `json:"allowed_hosts,omitempty"`
@@ -246,7 +290,25 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	m.Memory = tmp.Memory
+	m.Memory = &ManifestMemory{}
+	if tmp.Memory != nil {
+		m.Memory.MaxPages = tmp.Memory.MaxPages
+		if tmp.Memory.MaxHttpResponseBytes != nil {
+			m.Memory.MaxHttpResponseBytes = *tmp.Memory.MaxHttpResponseBytes
+		} else {
+			m.Memory.MaxHttpResponseBytes = -1
+		}
+
+		if tmp.Memory.MaxVarBytes != nil {
+			m.Memory.MaxVarBytes = *tmp.Memory.MaxVarBytes
+		} else {
+			m.Memory.MaxVarBytes = -1
+		}
+	} else {
+		m.Memory.MaxPages = 0
+		m.Memory.MaxHttpResponseBytes = -1
+		m.Memory.MaxVarBytes = -1
+	}
 	m.Config = tmp.Config
 	m.AllowedHosts = tmp.AllowedHosts
 	m.AllowedPaths = tmp.AllowedPaths
@@ -268,7 +330,7 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 				Name:    w.Name,
 			})
 		} else {
-			return errors.New("Invalid Wasm entry")
+			return errors.New("invalid Wasm entry")
 		}
 	}
 	return nil
@@ -276,7 +338,20 @@ func (m *Manifest) UnmarshalJSON(data []byte) error {
 
 // Close closes the plugin by freeing the underlying resources.
 func (p *Plugin) Close() error {
-	return p.Runtime.Wazero.Close(p.Runtime.ctx)
+	return p.CloseWithContext(context.Background())
+}
+
+// CloseWithContext closes the plugin by freeing the underlying resources.
+func (p *Plugin) CloseWithContext(ctx context.Context) error {
+	return p.Runtime.Wazero.Close(ctx)
+}
+
+// add an atomic global to store the plugin runtime-wide log level
+var pluginLogLevel = atomic.Int32{}
+
+// SetPluginLogLevel sets the log level for the plugin
+func SetLogLevel(level LogLevel) {
+	pluginLogLevel.Store(int32(level.ExtismCompat()))
 }
 
 // NewPlugin creates a new Extism plugin with the given manifest, configuration, and host functions.
@@ -298,8 +373,10 @@ func NewPlugin(
 		rconfig = rconfig.WithCloseOnContextDone(true)
 	}
 
-	if manifest.Memory.MaxPages > 0 {
-		rconfig = rconfig.WithMemoryLimitPages(manifest.Memory.MaxPages)
+	if manifest.Memory != nil {
+		if manifest.Memory.MaxPages > 0 {
+			rconfig = rconfig.WithMemoryLimitPages(manifest.Memory.MaxPages)
+		}
 	}
 
 	rt := wazero.NewRuntimeWithConfig(ctx, rconfig)
@@ -323,17 +400,16 @@ func NewPlugin(
 		Wazero: rt,
 		Extism: extism,
 		Env:    env,
-		ctx:    ctx,
 	}
 
 	if config.EnableWasi {
-		wasi_snapshot_preview1.MustInstantiate(c.ctx, c.Wazero)
+		wasi_snapshot_preview1.MustInstantiate(ctx, c.Wazero)
 
 		c.hasWasi = true
 	}
 
 	for name, funcs := range hostModules {
-		_, err := buildHostModule(c.ctx, c.Wazero, name, funcs)
+		_, err := buildHostModule(ctx, c.Wazero, name, funcs)
 		if err != nil {
 			return nil, err
 		}
@@ -341,18 +417,22 @@ func NewPlugin(
 
 	count := len(manifest.Wasm)
 	if count == 0 {
-		return nil, fmt.Errorf("Manifest can't be empty.")
+		return nil, fmt.Errorf("manifest can't be empty")
 	}
 
-	modules := map[string]api.Module{}
+	modules := map[string]module{}
 
 	// NOTE: this is only necessary for guest modules because
 	// host modules have the same access privileges as the host itself
 	fs := wazero.NewFSConfig()
 
 	for host, guest := range manifest.AllowedPaths {
-		// TODO: wazero supports read-only mounting, do we want to support that too?
-		fs = fs.WithDirMount(host, guest)
+		if strings.HasPrefix(host, "ro:") {
+			trimmed := strings.TrimPrefix(host, "ro:")
+			fs = fs.WithReadOnlyDirMount(trimmed, guest)
+		} else {
+			fs = fs.WithDirMount(host, guest)
+		}
 	}
 
 	moduleConfig := config.ModuleConfig
@@ -376,6 +456,7 @@ func NewPlugin(
 	//  - If there is only one module in the manifest then that is the main module by default
 	//  - Otherwise the last module listed is the main module
 
+	var trace *observe.TraceCtx
 	for i, wasm := range manifest.Wasm {
 		data, err := wasm.ToWasmData(ctx)
 		if err != nil {
@@ -387,84 +468,111 @@ func NewPlugin(
 			data.Name = "main"
 		}
 
+		if data.Name == "main" && config.ObserveAdapter != nil {
+			trace, err = config.ObserveAdapter.NewTraceCtx(ctx, c.Wazero, data.Data, config.ObserveOptions)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize Observe Adapter: %v", err)
+			}
+
+			trace.Finish()
+		}
+
 		_, okh := hostModules[data.Name]
 		_, okm := modules[data.Name]
 
 		if data.Name == "extism:host/env" || okh || okm {
-			return nil, fmt.Errorf("Module name collision: '%s'", data.Name)
+			return nil, fmt.Errorf("module name collision: '%s'", data.Name)
 		}
 
 		if data.Hash != "" {
 			calculatedHash := calculateHash(data.Data)
 			if data.Hash != calculatedHash {
-				return nil, fmt.Errorf("Hash mismatch for module '%s'", data.Name)
+				return nil, fmt.Errorf("hash mismatch for module '%s'", data.Name)
 			}
 		}
 
-		m, err := c.Wazero.InstantiateWithConfig(c.ctx, data.Data, moduleConfig.WithName(data.Name))
+		m, err := c.Wazero.InstantiateWithConfig(ctx, data.Data, moduleConfig.WithName(data.Name))
 		if err != nil {
 			return nil, err
 		}
 
-		modules[data.Name] = m
-	}
-
-	logLevel := LogLevelWarn
-	if config.LogLevel != logLevelUnset {
-		logLevel = config.LogLevel
+		modules[data.Name] = module{module: m, wasm: data.Data}
 	}
 
 	i := 0
-	for _, m := range modules {
-		if m.Name() == "main" {
-			p := &Plugin{
-				Runtime:        &c,
-				Modules:        modules,
-				Main:           m,
-				Config:         manifest.Config,
-				Var:            map[string][]byte{},
-				AllowedHosts:   manifest.AllowedHosts,
-				AllowedPaths:   manifest.AllowedPaths,
-				LastStatusCode: 0,
-				Timeout:        time.Duration(manifest.Timeout) * time.Millisecond,
-				log:            logStd,
-				logLevel:       logLevel}
+	httpMax := int64(1024 * 1024 * 50)
+	if manifest.Memory != nil && manifest.Memory.MaxHttpResponseBytes >= 0 {
+		httpMax = int64(manifest.Memory.MaxHttpResponseBytes)
+	}
 
-			p.guestRuntime = detectGuestRuntime(p)
+	varMax := int64(1024 * 1024)
+	if manifest.Memory != nil && manifest.Memory.MaxVarBytes >= 0 {
+		varMax = int64(manifest.Memory.MaxVarBytes)
+	}
+	for _, m := range modules {
+		if m.module.Name() == "main" {
+			p := &Plugin{
+				Runtime:              &c,
+				Modules:              modules,
+				Main:                 m,
+				Config:               manifest.Config,
+				Var:                  map[string][]byte{},
+				AllowedHosts:         manifest.AllowedHosts,
+				AllowedPaths:         manifest.AllowedPaths,
+				LastStatusCode:       0,
+				Timeout:              time.Duration(manifest.Timeout) * time.Millisecond,
+				MaxHttpResponseBytes: httpMax,
+				MaxVarBytes:          varMax,
+				log:                  logStd,
+				Adapter:              config.ObserveAdapter,
+				TraceCtx:             trace,
+			}
+
+			p.guestRuntime = detectGuestRuntime(ctx, p)
 			return p, nil
 		}
 
 		i++
 	}
 
-	return nil, errors.New("No main module found")
+	return nil, errors.New("no main module found")
 }
 
 // SetInput sets the input data for the plugin to be used in the next WebAssembly function call.
 func (plugin *Plugin) SetInput(data []byte) (uint64, error) {
-	_, err := plugin.Runtime.Extism.ExportedFunction("reset").Call(plugin.Runtime.ctx)
+	return plugin.SetInputWithContext(context.Background(), data)
+}
+
+// SetInputWithContext sets the input data for the plugin to be used in the next WebAssembly function call.
+func (plugin *Plugin) SetInputWithContext(ctx context.Context, data []byte) (uint64, error) {
+	_, err := plugin.Runtime.Extism.ExportedFunction("reset").Call(ctx)
 	if err != nil {
 		fmt.Println(err)
 		return 0, errors.New("reset")
 	}
 
-	ptr, err := plugin.Runtime.Extism.ExportedFunction("alloc").Call(plugin.Runtime.ctx, uint64(len(data)))
+	ptr, err := plugin.Runtime.Extism.ExportedFunction("alloc").Call(ctx, uint64(len(data)))
 	if err != nil {
 		return 0, err
 	}
 	plugin.Memory().Write(uint32(ptr[0]), data)
-	plugin.Runtime.Extism.ExportedFunction("input_set").Call(plugin.Runtime.ctx, ptr[0], uint64(len(data)))
+	plugin.Runtime.Extism.ExportedFunction("input_set").Call(ctx, ptr[0], uint64(len(data)))
 	return ptr[0], nil
 }
 
 // GetOutput retrieves the output data from the last WebAssembly function call.
 func (plugin *Plugin) GetOutput() ([]byte, error) {
-	outputOffs, err := plugin.Runtime.Extism.ExportedFunction("output_offset").Call(plugin.Runtime.ctx)
+	return plugin.GetOutputWithContext(context.Background())
+}
+
+// GetOutputWithContext retrieves the output data from the last WebAssembly function call.
+func (plugin *Plugin) GetOutputWithContext(ctx context.Context) ([]byte, error) {
+	outputOffs, err := plugin.Runtime.Extism.ExportedFunction("output_offset").Call(ctx)
 	if err != nil {
 		return []byte{}, err
 	}
 
-	outputLen, err := plugin.Runtime.Extism.ExportedFunction("output_length").Call(plugin.Runtime.ctx)
+	outputLen, err := plugin.Runtime.Extism.ExportedFunction("output_length").Call(ctx)
 	if err != nil {
 		return []byte{}, err
 	}
@@ -484,7 +592,12 @@ func (plugin *Plugin) Memory() api.Memory {
 
 // GetError retrieves the error message from the last WebAssembly function call, if any.
 func (plugin *Plugin) GetError() string {
-	errOffs, err := plugin.Runtime.Extism.ExportedFunction("error_get").Call(plugin.Runtime.ctx)
+	return plugin.GetErrorWithContext(context.Background())
+}
+
+// GetErrorWithContext retrieves the error message from the last WebAssembly function call.
+func (plugin *Plugin) GetErrorWithContext(ctx context.Context) string {
+	errOffs, err := plugin.Runtime.Extism.ExportedFunction("error_get").Call(ctx)
 	if err != nil {
 		return ""
 	}
@@ -493,7 +606,7 @@ func (plugin *Plugin) GetError() string {
 		return ""
 	}
 
-	errLen, err := plugin.Runtime.Extism.ExportedFunction("length").Call(plugin.Runtime.ctx, errOffs[0])
+	errLen, err := plugin.Runtime.Extism.ExportedFunction("length").Call(ctx, errOffs[0])
 	if err != nil {
 		return ""
 	}
@@ -504,41 +617,44 @@ func (plugin *Plugin) GetError() string {
 
 // FunctionExists returns true when the named function is present in the plugin's main module
 func (plugin *Plugin) FunctionExists(name string) bool {
-	return plugin.Main.ExportedFunction(name) != nil
+	return plugin.Main.module.ExportedFunction(name) != nil
 }
 
 // Call a function by name with the given input, returning the output
 func (plugin *Plugin) Call(name string, data []byte) (uint32, []byte, error) {
-	ctx := plugin.Runtime.ctx
+	return plugin.CallWithContext(context.Background(), name, data)
+}
 
+// Call a function by name with the given input and context, returning the output
+func (plugin *Plugin) CallWithContext(ctx context.Context, name string, data []byte) (uint32, []byte, error) {
 	if plugin.Timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(plugin.Runtime.ctx, plugin.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, plugin.Timeout)
 		defer cancel()
 	}
 
-	ctx = context.WithValue(ctx, "plugin", plugin)
+	ctx = context.WithValue(ctx, PluginCtxKey("plugin"), plugin)
 
 	intputOffset, err := plugin.SetInput(data)
 	if err != nil {
 		return 1, []byte{}, err
 	}
 
-	ctx = context.WithValue(ctx, "inputOffset", intputOffset)
+	ctx = context.WithValue(ctx, InputOffsetKey("inputOffset"), intputOffset)
 
-	var f = plugin.Main.ExportedFunction(name)
+	var f = plugin.Main.module.ExportedFunction(name)
 
 	if f == nil {
-		return 1, []byte{}, errors.New(fmt.Sprintf("Unknown function: %s", name))
+		return 1, []byte{}, fmt.Errorf("unknown function: %s", name)
 	} else if n := len(f.Definition().ResultTypes()); n > 1 {
-		return 1, []byte{}, errors.New(fmt.Sprintf("Function %s has %v results, expected 0 or 1", name, n))
+		return 1, []byte{}, fmt.Errorf("function %s has %v results, expected 0 or 1", name, n)
 	}
 
 	var isStart = name == "_start"
 	if plugin.guestRuntime.init != nil && !isStart && !plugin.guestRuntime.initialized {
-		err := plugin.guestRuntime.init()
+		err := plugin.guestRuntime.init(ctx)
 		if err != nil {
-			return 1, []byte{}, errors.New(fmt.Sprintf("failed to initialize runtime: %v", err))
+			return 1, []byte{}, fmt.Errorf("failed to initialize runtime: %v", err)
 		}
 		plugin.guestRuntime.initialized = true
 	}
@@ -546,6 +662,10 @@ func (plugin *Plugin) Call(name string, data []byte) (uint32, []byte, error) {
 	plugin.Logf(LogLevelDebug, "Calling function : %v", name)
 
 	res, err := f.Call(ctx)
+
+	if plugin.TraceCtx != nil {
+		defer plugin.TraceCtx.Finish()
+	}
 
 	// Try to extact WASI exit code
 	if exitErr, ok := err.(*sys.ExitError); ok {
@@ -579,14 +699,14 @@ func (plugin *Plugin) Call(name string, data []byte) (uint32, []byte, error) {
 	if rc != 0 {
 		errMsg := plugin.GetError()
 		if errMsg == "" {
-			errMsg = "Encountered an unknown error in call to Extism plugin function " + name
+			errMsg = "encountered an unknown error in call to Extism plugin function " + name
 		}
 		return rc, []byte{}, errors.New(errMsg)
 	}
 
 	output, err := plugin.GetOutput()
 	if err != nil {
-		return rc, []byte{}, fmt.Errorf("Failed to get output: %v", err)
+		return rc, []byte{}, fmt.Errorf("failed to get output: %v", err)
 	}
 
 	return rc, output, nil

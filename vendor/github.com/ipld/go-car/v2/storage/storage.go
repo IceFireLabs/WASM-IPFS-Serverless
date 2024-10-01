@@ -18,7 +18,7 @@ import (
 	ipldstorage "github.com/ipld/go-ipld-prime/storage"
 )
 
-var errClosed = errors.New("cannot use a CARv2 storage after closing")
+var ErrClosed = errors.New("cannot use a CAR storage after closing")
 
 type ReaderAtWriterAt interface {
 	io.ReaderAt
@@ -30,6 +30,7 @@ type ReadableCar interface {
 	ipldstorage.ReadableStorage
 	ipldstorage.StreamingReadableStorage
 	Roots() []cid.Cid
+	Index() index.Index
 }
 
 // WritableCar is compatible with storage.WritableStorage but also returns
@@ -40,6 +41,7 @@ type ReadableCar interface {
 type WritableCar interface {
 	ipldstorage.WritableStorage
 	Roots() []cid.Cid
+	Index() index.Index
 	Finalize() error
 }
 
@@ -93,7 +95,7 @@ func OpenReadable(reader io.ReaderAt, opts ...carv2.Option) (ReadableCar, error)
 		sc.roots = header.Roots
 		sc.reader = reader
 		rr.Seek(0, io.SeekStart)
-		sc.idx = store.NewInsertionIndex()
+		sc.idx = index.NewInsertionIndex()
 		if err := carv2.LoadIndex(sc.idx, rr, opts...); err != nil {
 			return nil, err
 		}
@@ -120,7 +122,7 @@ func OpenReadable(reader io.ReaderAt, opts ...carv2.Option) (ReadableCar, error)
 			if err != nil {
 				return nil, err
 			}
-			sc.idx = store.NewInsertionIndex()
+			sc.idx = index.NewInsertionIndex()
 			if err := carv2.LoadIndex(sc.idx, dr, opts...); err != nil {
 				return nil, err
 			}
@@ -169,7 +171,7 @@ func NewWritable(writer io.Writer, roots []cid.Cid, opts ...carv2.Option) (Writa
 func newWritable(writer io.Writer, roots []cid.Cid, opts ...carv2.Option) (*StorageCar, error) {
 	sc := &StorageCar{
 		writer: &positionTrackingWriter{w: writer},
-		idx:    store.NewInsertionIndex(),
+		idx:    index.NewInsertionIndex(),
 		header: carv2.NewHeader(0),
 		opts:   carv2.ApplyOptions(opts...),
 		roots:  roots,
@@ -260,7 +262,7 @@ func OpenReadableWritable(rw ReaderAtWriterAt, roots []cid.Cid, opts ...carv2.Op
 		rw,
 		sc.reader,
 		sc.dataWriter,
-		sc.idx.(*store.InsertionIndex),
+		sc.idx.(*index.InsertionIndex),
 		roots,
 		sc.header.DataOffset,
 		sc.opts.WriteAsCarV1,
@@ -293,6 +295,12 @@ func (sc *StorageCar) Roots() []cid.Cid {
 	return sc.roots
 }
 
+// Index gives direct access to the index. It should be used with care.
+// Modifying the index may result corruption or invalid reads.
+func (sc *StorageCar) Index() index.Index {
+	return sc.idx
+}
+
 // Put adds a block to the CAR, where the block is identified by the given CID
 // provided in string form. The keyStr value must be a valid CID binary string
 // (not a multibase string representation), i.e. generated with CID#KeyString().
@@ -306,10 +314,10 @@ func (sc *StorageCar) Put(ctx context.Context, keyStr string, data []byte) error
 	defer sc.mu.Unlock()
 
 	if sc.closed {
-		return errClosed
+		return ErrClosed
 	}
 
-	idx, ok := sc.idx.(*store.InsertionIndex)
+	idx, ok := sc.idx.(*index.InsertionIndex)
 	if !ok || sc.writer == nil {
 		return fmt.Errorf("cannot put into a read-only CAR")
 	}
@@ -349,6 +357,25 @@ func (sc *StorageCar) Has(ctx context.Context, keyStr string) (bool, error) {
 		return false, fmt.Errorf("bad CID key: %w", err)
 	}
 
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+
+	if sc.closed {
+		return false, ErrClosed
+	}
+
+	if idx, ok := sc.idx.(*index.InsertionIndex); ok && sc.writer != nil {
+		// writable CAR, fast path using InsertionIndex
+		return store.Has(
+			idx,
+			keyCid,
+			sc.opts.MaxIndexCidSize,
+			sc.opts.StoreIdentityCIDs,
+			sc.opts.BlockstoreAllowDuplicatePuts,
+			sc.opts.BlockstoreUseWholeCIDs,
+		)
+	}
+
 	if !sc.opts.StoreIdentityCIDs {
 		// If we don't store identity CIDs then we can return them straight away as if they are here,
 		// otherwise we need to check for their existence.
@@ -358,13 +385,6 @@ func (sc *StorageCar) Has(ctx context.Context, keyStr string) (bool, error) {
 		} else if ok {
 			return true, nil
 		}
-	}
-
-	sc.mu.RLock()
-	defer sc.mu.RUnlock()
-
-	if sc.closed {
-		return false, errClosed
 	}
 
 	_, _, size, err := store.FindCid(
@@ -423,7 +443,7 @@ func (sc *StorageCar) GetStream(ctx context.Context, keyStr string) (io.ReadClos
 	defer sc.mu.RUnlock()
 
 	if sc.closed {
-		return nil, errClosed
+		return nil, ErrClosed
 	}
 
 	_, offset, size, err := store.FindCid(
@@ -448,7 +468,7 @@ func (sc *StorageCar) GetStream(ctx context.Context, keyStr string) (io.ReadClos
 // payload location. This should be called on a writable StorageCar in order to
 // avoid data loss.
 func (sc *StorageCar) Finalize() error {
-	idx, ok := sc.idx.(*store.InsertionIndex)
+	idx, ok := sc.idx.(*index.InsertionIndex)
 	if !ok || sc.writer == nil {
 		// ignore this, it's not writable
 		return nil

@@ -1,110 +1,225 @@
 package arm64
 
-// This file implements the interfaces required for register allocations. See regalloc/api.go.
+// This file implements the interfaces required for register allocations. See backend.RegAllocFunctionMachine.
 
 import (
 	"github.com/tetratelabs/wazero/internal/engine/wazevo/backend/regalloc"
 	"github.com/tetratelabs/wazero/internal/engine/wazevo/ssa"
 )
 
-type (
-	// regAllocFunctionImpl implements regalloc.Function.
-	regAllocFunctionImpl struct {
-		m *machine
-		// iter is the iterator for reversePostOrderBlocks
-		iter                   int
-		reversePostOrderBlocks []regAllocBlockImpl
-		// labelToRegAllocBlockIndex maps label to the index of reversePostOrderBlocks.
-		labelToRegAllocBlockIndex map[label]int
-		loopNestingForestRoots    []ssa.BasicBlock
-	}
-
-	// regAllocBlockImpl implements regalloc.Block.
-	regAllocBlockImpl struct {
-		// f is the function this instruction belongs to. Used to reuse the regAllocFunctionImpl.predsSlice slice for Defs() and Uses().
-		f                         *regAllocFunctionImpl
-		sb                        ssa.BasicBlock
-		l                         label
-		pos                       *labelPosition
-		loopNestingForestChildren []ssa.BasicBlock
-		cur                       *instruction
-		id                        int
-		cachedLastInstr           regalloc.Instr
-	}
-)
-
-func (f *regAllocFunctionImpl) addBlock(sb ssa.BasicBlock, l label, pos *labelPosition) {
-	i := len(f.reversePostOrderBlocks)
-	f.reversePostOrderBlocks = append(f.reversePostOrderBlocks, regAllocBlockImpl{
-		f:   f,
-		sb:  sb,
-		l:   l,
-		pos: pos,
-		id:  int(sb.ID()),
-	})
-	f.labelToRegAllocBlockIndex[l] = i
+// regAllocFn implements regalloc.Function.
+type regAllocFn struct {
+	ssaB                   ssa.Builder
+	m                      *machine
+	loopNestingForestRoots []ssa.BasicBlock
+	blockIter              int
 }
 
-func (f *regAllocFunctionImpl) reset() {
-	f.reversePostOrderBlocks = f.reversePostOrderBlocks[:0]
-	f.iter = 0
-}
-
-var (
-	_ regalloc.Function = (*regAllocFunctionImpl)(nil)
-	_ regalloc.Block    = (*regAllocBlockImpl)(nil)
-)
-
-// PostOrderBlockIteratorBegin implements regalloc.Function PostOrderBlockIteratorBegin.
-func (f *regAllocFunctionImpl) PostOrderBlockIteratorBegin() regalloc.Block {
-	f.iter = len(f.reversePostOrderBlocks) - 1
+// PostOrderBlockIteratorBegin implements regalloc.Function.
+func (f *regAllocFn) PostOrderBlockIteratorBegin() *labelPosition {
+	f.blockIter = len(f.m.orderedSSABlockLabelPos) - 1
 	return f.PostOrderBlockIteratorNext()
 }
 
-// PostOrderBlockIteratorNext implements regalloc.Function PostOrderBlockIteratorNext.
-func (f *regAllocFunctionImpl) PostOrderBlockIteratorNext() regalloc.Block {
-	if f.iter < 0 {
+// PostOrderBlockIteratorNext implements regalloc.Function.
+func (f *regAllocFn) PostOrderBlockIteratorNext() *labelPosition {
+	if f.blockIter < 0 {
 		return nil
 	}
-	b := &f.reversePostOrderBlocks[f.iter]
-	f.iter--
+	b := f.m.orderedSSABlockLabelPos[f.blockIter]
+	f.blockIter--
 	return b
 }
 
-// ReversePostOrderBlockIteratorBegin implements regalloc.Function ReversePostOrderBlockIteratorBegin.
-func (f *regAllocFunctionImpl) ReversePostOrderBlockIteratorBegin() regalloc.Block {
-	f.iter = 0
+// ReversePostOrderBlockIteratorBegin implements regalloc.Function.
+func (f *regAllocFn) ReversePostOrderBlockIteratorBegin() *labelPosition {
+	f.blockIter = 0
 	return f.ReversePostOrderBlockIteratorNext()
 }
 
-// ReversePostOrderBlockIteratorNext implements regalloc.Function ReversePostOrderBlockIteratorNext.
-func (f *regAllocFunctionImpl) ReversePostOrderBlockIteratorNext() regalloc.Block {
-	if f.iter >= len(f.reversePostOrderBlocks) {
+// ReversePostOrderBlockIteratorNext implements regalloc.Function.
+func (f *regAllocFn) ReversePostOrderBlockIteratorNext() *labelPosition {
+	if f.blockIter >= len(f.m.orderedSSABlockLabelPos) {
 		return nil
 	}
-	b := &f.reversePostOrderBlocks[f.iter]
-	f.iter++
+	b := f.m.orderedSSABlockLabelPos[f.blockIter]
+	f.blockIter++
 	return b
 }
 
-// ClobberedRegisters implements regalloc.Function ClobberedRegisters.
-func (f *regAllocFunctionImpl) ClobberedRegisters(regs []regalloc.VReg) {
-	m := f.m
-	m.clobberedRegs = append(m.clobberedRegs[:0], regs...)
+// ClobberedRegisters implements regalloc.Function.
+func (f *regAllocFn) ClobberedRegisters(regs []regalloc.VReg) {
+	f.m.clobberedRegs = append(f.m.clobberedRegs[:0], regs...)
 }
 
-// StoreRegisterBefore implements regalloc.Function StoreRegisterBefore.
-func (f *regAllocFunctionImpl) StoreRegisterBefore(v regalloc.VReg, instr regalloc.Instr) {
-	m := f.m
-	m.insertStoreRegisterAt(v, instr.(*instruction), false)
+// LoopNestingForestRoots implements regalloc.Function.
+func (f *regAllocFn) LoopNestingForestRoots() int {
+	f.loopNestingForestRoots = f.ssaB.LoopNestingForestRoots()
+	return len(f.loopNestingForestRoots)
 }
 
-// SwapAtEndOfBlock implements regalloc.Function SwapAtEndOfBlock.
-func (f *regAllocFunctionImpl) SwapAtEndOfBlock(x1, x2, tmp regalloc.VReg, block regalloc.Block) {
-	blk := block.(*regAllocBlockImpl)
-	cur := blk.LastInstr().(*instruction)
-	cur = cur.prev
-	f.m.swap(cur, x1, x2, tmp)
+// LoopNestingForestRoot implements regalloc.Function.
+func (f *regAllocFn) LoopNestingForestRoot(i int) *labelPosition {
+	root := f.loopNestingForestRoots[i]
+	pos := f.m.getOrAllocateSSABlockLabelPosition(root)
+	return pos
+}
+
+// LowestCommonAncestor implements regalloc.Function.
+func (f *regAllocFn) LowestCommonAncestor(blk1, blk2 *labelPosition) *labelPosition {
+	sb := f.ssaB.LowestCommonAncestor(blk1.sb, blk2.sb)
+	pos := f.m.getOrAllocateSSABlockLabelPosition(sb)
+	return pos
+}
+
+// Idom implements regalloc.Function.
+func (f *regAllocFn) Idom(blk *labelPosition) *labelPosition {
+	sb := f.ssaB.Idom(blk.sb)
+	pos := f.m.getOrAllocateSSABlockLabelPosition(sb)
+	return pos
+}
+
+// SwapBefore implements regalloc.Function.
+func (f *regAllocFn) SwapBefore(x1, x2, tmp regalloc.VReg, instr *instruction) {
+	f.m.swap(instr.prev, x1, x2, tmp)
+}
+
+// StoreRegisterBefore implements regalloc.Function.
+func (f *regAllocFn) StoreRegisterBefore(v regalloc.VReg, instr *instruction) {
+	m := f.m
+	m.insertStoreRegisterAt(v, instr, false)
+}
+
+// StoreRegisterAfter implements regalloc.Function.
+func (f *regAllocFn) StoreRegisterAfter(v regalloc.VReg, instr *instruction) {
+	m := f.m
+	m.insertStoreRegisterAt(v, instr, true)
+}
+
+// ReloadRegisterBefore implements regalloc.Function.
+func (f *regAllocFn) ReloadRegisterBefore(v regalloc.VReg, instr *instruction) {
+	m := f.m
+	m.insertReloadRegisterAt(v, instr, false)
+}
+
+// ReloadRegisterAfter implements regalloc.Function.
+func (f *regAllocFn) ReloadRegisterAfter(v regalloc.VReg, instr *instruction) {
+	m := f.m
+	m.insertReloadRegisterAt(v, instr, true)
+}
+
+// InsertMoveBefore implements regalloc.Function.
+func (f *regAllocFn) InsertMoveBefore(dst, src regalloc.VReg, instr *instruction) {
+	f.m.insertMoveBefore(dst, src, instr)
+}
+
+// LoopNestingForestChild implements regalloc.Function.
+func (f *regAllocFn) LoopNestingForestChild(pos *labelPosition, i int) *labelPosition {
+	childSB := pos.sb.LoopNestingForestChildren()[i]
+	return f.m.getOrAllocateSSABlockLabelPosition(childSB)
+}
+
+// Succ implements regalloc.Block.
+func (f *regAllocFn) Succ(pos *labelPosition, i int) *labelPosition {
+	succSB := pos.sb.Succ(i)
+	if succSB.ReturnBlock() {
+		return nil
+	}
+	return f.m.getOrAllocateSSABlockLabelPosition(succSB)
+}
+
+// Pred implements regalloc.Block.
+func (f *regAllocFn) Pred(pos *labelPosition, i int) *labelPosition {
+	predSB := pos.sb.Pred(i)
+	return f.m.getOrAllocateSSABlockLabelPosition(predSB)
+}
+
+// BlockParams implements regalloc.Function.
+func (f *regAllocFn) BlockParams(pos *labelPosition, regs *[]regalloc.VReg) []regalloc.VReg {
+	c := f.m.compiler
+	*regs = (*regs)[:0]
+	for i := 0; i < pos.sb.Params(); i++ {
+		v := c.VRegOf(pos.sb.Param(i))
+		*regs = append(*regs, v)
+	}
+	return *regs
+}
+
+// ID implements regalloc.Block.
+func (pos *labelPosition) ID() int32 {
+	return int32(pos.sb.ID())
+}
+
+// InstrIteratorBegin implements regalloc.Block.
+func (pos *labelPosition) InstrIteratorBegin() *instruction {
+	ret := pos.begin
+	pos.cur = ret
+	return ret
+}
+
+// InstrIteratorNext implements regalloc.Block.
+func (pos *labelPosition) InstrIteratorNext() *instruction {
+	for {
+		if pos.cur == pos.end {
+			return nil
+		}
+		instr := pos.cur.next
+		pos.cur = instr
+		if instr == nil {
+			return nil
+		} else if instr.addedBeforeRegAlloc {
+			// Only concerned about the instruction added before regalloc.
+			return instr
+		}
+	}
+}
+
+// InstrRevIteratorBegin implements regalloc.Block.
+func (pos *labelPosition) InstrRevIteratorBegin() *instruction {
+	pos.cur = pos.end
+	return pos.cur
+}
+
+// InstrRevIteratorNext implements regalloc.Block.
+func (pos *labelPosition) InstrRevIteratorNext() *instruction {
+	for {
+		if pos.cur == pos.begin {
+			return nil
+		}
+		instr := pos.cur.prev
+		pos.cur = instr
+		if instr == nil {
+			return nil
+		} else if instr.addedBeforeRegAlloc {
+			// Only concerned about the instruction added before regalloc.
+			return instr
+		}
+	}
+}
+
+// FirstInstr implements regalloc.Block.
+func (pos *labelPosition) FirstInstr() *instruction { return pos.begin }
+
+// LastInstrForInsertion implements regalloc.Block.
+func (pos *labelPosition) LastInstrForInsertion() *instruction {
+	return lastInstrForInsertion(pos.begin, pos.end)
+}
+
+// Preds implements regalloc.Block.
+func (pos *labelPosition) Preds() int { return pos.sb.Preds() }
+
+// Entry implements regalloc.Block.
+func (pos *labelPosition) Entry() bool { return pos.sb.EntryBlock() }
+
+// Succs implements regalloc.Block.
+func (pos *labelPosition) Succs() int { return pos.sb.Succs() }
+
+// LoopHeader implements regalloc.Block.
+func (pos *labelPosition) LoopHeader() bool { return pos.sb.LoopHeader() }
+
+// LoopNestingForestChildren implements regalloc.Block.
+func (pos *labelPosition) LoopNestingForestChildren() int {
+	return len(pos.sb.LoopNestingForestChildren())
 }
 
 func (m *machine) swap(cur *instruction, x1, x2, tmp regalloc.VReg) {
@@ -143,10 +258,7 @@ func (m *machine) swap(cur *instruction, x1, x2, tmp regalloc.VReg) {
 	}
 }
 
-// InsertMoveBefore implements regalloc.Function InsertMoveBefore.
-func (f *regAllocFunctionImpl) InsertMoveBefore(dst, src regalloc.VReg, instr regalloc.Instr) {
-	m := f.m
-
+func (m *machine) insertMoveBefore(dst, src regalloc.VReg, instr *instruction) {
 	typ := src.RegType()
 	if typ != dst.RegType() {
 		panic("BUG: src and dst must have the same type")
@@ -159,175 +271,10 @@ func (f *regAllocFunctionImpl) InsertMoveBefore(dst, src regalloc.VReg, instr re
 		mov.asFpuMov128(dst, src)
 	}
 
-	cur := instr.(*instruction).prev
+	cur := instr.prev
 	prevNext := cur.next
 	cur = linkInstr(cur, mov)
 	linkInstr(cur, prevNext)
-}
-
-// StoreRegisterAfter implements regalloc.Function StoreRegisterAfter.
-func (f *regAllocFunctionImpl) StoreRegisterAfter(v regalloc.VReg, instr regalloc.Instr) {
-	m := f.m
-	m.insertStoreRegisterAt(v, instr.(*instruction), true)
-}
-
-// ReloadRegisterBefore implements regalloc.Function ReloadRegisterBefore.
-func (f *regAllocFunctionImpl) ReloadRegisterBefore(v regalloc.VReg, instr regalloc.Instr) {
-	m := f.m
-	m.insertReloadRegisterAt(v, instr.(*instruction), false)
-}
-
-// ReloadRegisterAfter implements regalloc.Function ReloadRegisterAfter.
-func (f *regAllocFunctionImpl) ReloadRegisterAfter(v regalloc.VReg, instr regalloc.Instr) {
-	m := f.m
-	m.insertReloadRegisterAt(v, instr.(*instruction), true)
-}
-
-// Done implements regalloc.Function Done.
-func (f *regAllocFunctionImpl) Done() {
-	m := f.m
-	// Now that we know the final spill slot size, we must align spillSlotSize to 16 bytes.
-	m.spillSlotSize = (m.spillSlotSize + 15) &^ 15
-}
-
-// ID implements regalloc.Block ID.
-func (r *regAllocBlockImpl) ID() int {
-	return r.id
-}
-
-// Preds implements regalloc.Block Preds.
-func (r *regAllocBlockImpl) Preds() int {
-	return r.sb.Preds()
-}
-
-// Pred implements regalloc.Block Pred.
-func (r *regAllocBlockImpl) Pred(i int) regalloc.Block {
-	sb := r.sb
-	pred := sb.Pred(i)
-	l := r.f.m.ssaBlockIDToLabels[pred.ID()]
-	index := r.f.labelToRegAllocBlockIndex[l]
-	return &r.f.reversePostOrderBlocks[index]
-}
-
-// Succs implements regalloc.Block Succs.
-func (r *regAllocBlockImpl) Succs() int {
-	return r.sb.Succs()
-}
-
-// Succ implements regalloc.Block Succ.
-func (r *regAllocBlockImpl) Succ(i int) regalloc.Block {
-	sb := r.sb
-	succ := sb.Succ(i)
-	if succ.ReturnBlock() {
-		return nil
-	}
-	l := r.f.m.ssaBlockIDToLabels[succ.ID()]
-	index := r.f.labelToRegAllocBlockIndex[l]
-	return &r.f.reversePostOrderBlocks[index]
-}
-
-// LoopHeader implements regalloc.Block LoopHeader.
-func (r *regAllocBlockImpl) LoopHeader() bool {
-	return r.sb.LoopHeader()
-}
-
-// LoopNestingForestRoots implements regalloc.Function LoopNestingForestRoots.
-func (f *regAllocFunctionImpl) LoopNestingForestRoots() int {
-	f.loopNestingForestRoots = f.m.compiler.SSABuilder().LoopNestingForestRoots()
-	return len(f.loopNestingForestRoots)
-}
-
-// LoopNestingForestRoot implements regalloc.Function LoopNestingForestRoot.
-func (f *regAllocFunctionImpl) LoopNestingForestRoot(i int) regalloc.Block {
-	blk := f.loopNestingForestRoots[i]
-	l := f.m.ssaBlockIDToLabels[blk.ID()]
-	index := f.labelToRegAllocBlockIndex[l]
-	return &f.reversePostOrderBlocks[index]
-}
-
-// LoopNestingForestChildren implements regalloc.Block LoopNestingForestChildren.
-func (r *regAllocBlockImpl) LoopNestingForestChildren() int {
-	r.loopNestingForestChildren = r.sb.LoopNestingForestChildren()
-	return len(r.loopNestingForestChildren)
-}
-
-// LoopNestingForestChild implements regalloc.Block LoopNestingForestChild.
-func (r *regAllocBlockImpl) LoopNestingForestChild(i int) regalloc.Block {
-	blk := r.loopNestingForestChildren[i]
-	l := r.f.m.ssaBlockIDToLabels[blk.ID()]
-	index := r.f.labelToRegAllocBlockIndex[l]
-	return &r.f.reversePostOrderBlocks[index]
-}
-
-// InstrIteratorBegin implements regalloc.Block InstrIteratorBegin.
-func (r *regAllocBlockImpl) InstrIteratorBegin() regalloc.Instr {
-	r.cur = r.pos.begin
-	return r.cur
-}
-
-// InstrIteratorNext implements regalloc.Block InstrIteratorNext.
-func (r *regAllocBlockImpl) InstrIteratorNext() regalloc.Instr {
-	for {
-		if r.cur == r.pos.end {
-			return nil
-		}
-		instr := r.cur.next
-		r.cur = instr
-		if instr == nil {
-			return nil
-		} else if instr.addedBeforeRegAlloc {
-			// Only concerned about the instruction added before regalloc.
-			return instr
-		}
-	}
-}
-
-// InstrRevIteratorBegin implements regalloc.Block InstrRevIteratorBegin.
-func (r *regAllocBlockImpl) InstrRevIteratorBegin() regalloc.Instr {
-	r.cur = r.pos.end
-	return r.cur
-}
-
-// InstrRevIteratorNext implements regalloc.Block InstrRevIteratorNext.
-func (r *regAllocBlockImpl) InstrRevIteratorNext() regalloc.Instr {
-	for {
-		if r.cur == r.pos.begin {
-			return nil
-		}
-		instr := r.cur.prev
-		r.cur = instr
-		if instr == nil {
-			return nil
-		} else if instr.addedBeforeRegAlloc {
-			// Only concerned about the instruction added before regalloc.
-			return instr
-		}
-	}
-}
-
-// BlockParams implements regalloc.Block BlockParams.
-func (r *regAllocBlockImpl) BlockParams(regs *[]regalloc.VReg) []regalloc.VReg {
-	c := r.f.m.compiler
-	*regs = (*regs)[:0]
-	for i := 0; i < r.sb.Params(); i++ {
-		v := c.VRegOf(r.sb.Param(i))
-		*regs = append(*regs, v)
-	}
-	return *regs
-}
-
-// Entry implements regalloc.Block Entry.
-func (r *regAllocBlockImpl) Entry() bool { return r.sb.EntryBlock() }
-
-// RegisterInfo implements backend.Machine.
-func (m *machine) RegisterInfo() *regalloc.RegisterInfo {
-	return regInfo
-}
-
-// Function implements backend.Machine Function.
-func (m *machine) Function() regalloc.Function {
-	m.regAllocStarted = true
-	return &m.regAllocFn
 }
 
 func (m *machine) insertStoreRegisterAt(v regalloc.VReg, instr *instruction, after bool) *instruction {
@@ -345,7 +292,7 @@ func (m *machine) insertStoreRegisterAt(v regalloc.VReg, instr *instruction, aft
 	}
 
 	offsetFromSP := m.getVRegSpillSlotOffsetFromSP(v.ID(), typ.Size())
-	var amode addressMode
+	var amode *addressMode
 	cur, amode = m.resolveAddressModeForOffsetAndInsert(cur, offsetFromSP, typ.Bits(), spVReg, true)
 	store := m.allocateInstr()
 	store.asStore(operandNR(v), amode, typ.Bits())
@@ -369,16 +316,16 @@ func (m *machine) insertReloadRegisterAt(v regalloc.VReg, instr *instruction, af
 	}
 
 	offsetFromSP := m.getVRegSpillSlotOffsetFromSP(v.ID(), typ.Size())
-	var amode addressMode
+	var amode *addressMode
 	cur, amode = m.resolveAddressModeForOffsetAndInsert(cur, offsetFromSP, typ.Bits(), spVReg, true)
 	load := m.allocateInstr()
 	switch typ {
 	case ssa.TypeI32, ssa.TypeI64:
-		load.asULoad(operandNR(v), amode, typ.Bits())
+		load.asULoad(v, amode, typ.Bits())
 	case ssa.TypeF32, ssa.TypeF64:
-		load.asFpuLoad(operandNR(v), amode, typ.Bits())
+		load.asFpuLoad(v, amode, typ.Bits())
 	case ssa.TypeV128:
-		load.asFpuLoad(operandNR(v), amode, 128)
+		load.asFpuLoad(v, amode, 128)
 	default:
 		panic("TODO")
 	}
@@ -387,47 +334,18 @@ func (m *machine) insertReloadRegisterAt(v regalloc.VReg, instr *instruction, af
 	return linkInstr(cur, prevNext)
 }
 
-// LowestCommonAncestor implements regalloc.Function LowestCommonAncestor.
-func (f *regAllocFunctionImpl) LowestCommonAncestor(blk1, blk2 regalloc.Block) regalloc.Block {
-	ret := f.m.compiler.SSABuilder().LowestCommonAncestor(blk1.(*regAllocBlockImpl).sb, blk2.(*regAllocBlockImpl).sb)
-	l := f.m.ssaBlockIDToLabels[ret.ID()]
-	index := f.labelToRegAllocBlockIndex[l]
-	return &f.reversePostOrderBlocks[index]
-}
-
-func (f *regAllocFunctionImpl) Idom(blk regalloc.Block) regalloc.Block {
-	builder := f.m.compiler.SSABuilder()
-	idom := builder.Idom(blk.(*regAllocBlockImpl).sb)
-	if idom == nil {
-		panic("BUG: idom must not be nil")
-	}
-	l := f.m.ssaBlockIDToLabels[idom.ID()]
-	index := f.labelToRegAllocBlockIndex[l]
-	return &f.reversePostOrderBlocks[index]
-}
-
-// FirstInstr implements regalloc.Block FirstInstr.
-func (r *regAllocBlockImpl) FirstInstr() regalloc.Instr {
-	return r.pos.begin
-}
-
-// LastInstr implements regalloc.Block LastInstr.
-func (r *regAllocBlockImpl) LastInstr() regalloc.Instr {
-	if r.cachedLastInstr == nil {
-		cur := r.pos.end
-		for cur.kind == nop0 {
-			cur = cur.prev
-			if cur == r.pos.begin {
-				r.cachedLastInstr = r.pos.end
-				return r.cachedLastInstr
-			}
-		}
-		switch cur.kind {
-		case br:
-			r.cachedLastInstr = cur
-		default:
-			r.cachedLastInstr = r.pos.end
+func lastInstrForInsertion(begin, end *instruction) *instruction {
+	cur := end
+	for cur.kind == nop0 {
+		cur = cur.prev
+		if cur == begin {
+			return end
 		}
 	}
-	return r.cachedLastInstr
+	switch cur.kind {
+	case br:
+		return cur
+	default:
+		return end
+	}
 }

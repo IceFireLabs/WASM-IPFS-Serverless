@@ -16,6 +16,8 @@ func IsFileExist(path string) bool {
 		if os.IsNotExist(err) {
 			return false
 		}
+		// Log the error if it's not a "file does not exist" error
+		log.Printf("Error checking file existence: %v", err)
 	}
 	return true
 }
@@ -23,7 +25,7 @@ func IsFileExist(path string) bool {
 // ReadFileData reads the contents of a file specified by the FileURI parameter.
 // It returns the file data as a byte slice and an error if the file does not exist or if there was an error reading the file.
 func ReadFileData(FileURI string) ([]byte, error) {
-	if _, err := os.Stat(FileURI); os.IsNotExist(err) {
+	if !IsFileExist(FileURI) {
 		return nil, fmt.Errorf("%s does not exist", FileURI)
 	}
 
@@ -45,7 +47,8 @@ func InArray(in string, array []string) bool {
 	return false
 }
 
-// GoWithRecover wraps a `go func()` with recover()
+// GoWithRecover wraps a `go func()` with recover() to handle panics gracefully.
+// It logs the panic details and optionally calls a recover handler function.
 func GoWithRecover(handler func(), recoverHandler func(r interface{})) {
 	go func() {
 		defer func() {
@@ -55,7 +58,7 @@ func GoWithRecover(handler func(), recoverHandler func(r interface{})) {
 					go func() {
 						defer func() {
 							if p := recover(); p != nil {
-								log.Printf("recover goroutine panic:%v\n%s\n", p, string(debug.Stack()))
+								log.Printf("recover goroutine panic: %v\n%s\n", p, string(debug.Stack()))
 							}
 						}()
 						recoverHandler(r)

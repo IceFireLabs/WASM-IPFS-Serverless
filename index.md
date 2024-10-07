@@ -7,6 +7,8 @@ WASM-IPFS-Serverless is an innovative framework that seamlessly integrates WebAs
 
 ![image](https://res.cloudinary.com/malloc/image/upload/v1727788070/372457301-bef50047-79b9-4cba-a5db-75b4571917da-min_it8u4g.png)
 
+[wasm-ipfs-serverless runtime.webm](https://github.com/user-attachments/assets/920cbc78-7129-49fb-9706-edc219372062)
+
 
 ## Key Features and Components
 

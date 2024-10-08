@@ -92,8 +92,8 @@ github.com/envoyproxy/go-control-plane v0.9.9-0.20201210154907-fd9021fe5dad/go.m
 github.com/envoyproxy/go-control-plane v0.9.9-0.20210217033140-668b12f5399d/go.mod h1:cXg6YxExXjJnVBQHBLXeUAgxn2UodCpnH306RInaBQk=
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
 github.com/evanphx/json-patch v4.2.0+incompatible/go.mod h1:50XU6AFN0ol/bzJsmQLiYLvXMP4fmwYFNcr97nuDLSk=
-github.com/extism/go-sdk v1.4.0 h1:8qlZM7A5eB4FyKI9cwxiUA3tzUkXlraKt5CULuzjRxI=
-github.com/extism/go-sdk v1.4.0/go.mod h1:yRolc4PvIUQ9J/BBB3QZ5EY1MtXAN2jqBGDGR3Sk54M=
+github.com/extism/go-sdk v1.5.0 h1:2Unb+YSe9j0FkIyNuOFBbiFu5LU0nQF+43MR+jTD/ek=
+github.com/extism/go-sdk v1.5.0/go.mod h1:yRolc4PvIUQ9J/BBB3QZ5EY1MtXAN2jqBGDGR3Sk54M=
 github.com/fatih/color v1.7.0/go.mod h1:Zm6kSWBoL9eyXnKyktHP6abPY2pDugNf5KwzbycvMj4=
 github.com/form3tech-oss/jwt-go v3.2.3+incompatible/go.mod h1:pbq4aXjuKjdthFRnoDwaVPLA+WlJuPGy+QneDUgJi2k=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=

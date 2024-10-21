@@ -9,7 +9,7 @@ require (
 	github.com/go-chassis/go-archaius v1.5.6
 	github.com/gofiber/fiber/v2 v2.52.5
 	github.com/ipfs/go-cid v0.4.1
-	github.com/ipfs/go-unixfsnode v1.9.1
+	github.com/ipfs/go-unixfsnode v1.9.2
 	github.com/ipld/go-car/v2 v2.14.2
 	github.com/ipld/go-codec-dagpb v1.6.0
 	github.com/ipld/go-ipld-prime v0.21.0

@@ -5,7 +5,7 @@ go 1.22
 toolchain go1.22.3
 
 require (
-	github.com/extism/go-sdk v1.5.0
+	github.com/extism/go-sdk v1.6.0
 	github.com/go-chassis/go-archaius v1.5.6
 	github.com/gofiber/fiber/v2 v2.52.5
 	github.com/ipfs/go-cid v0.4.1
